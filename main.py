@@ -61,7 +61,7 @@ def generate_behavior(request: InferenceRequest):
             ],
             "format": RESPONSE_SCHEMA,
             "options": {
-                "temperature": 0.0,     # Enforces zero formatting drift
+                "temperature": 0.6,     # Enforces zero formatting drift
                 "num_thread": 4,        # Locks to your 4 fast Intel P-cores
                 "num_ctx": 2048,
                 "num_predict": 120,

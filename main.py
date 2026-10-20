@@ -6,58 +6,63 @@ from pydantic import BaseModel
 app = FastAPI(title="Digital Fridge LLM Gateway")
 
 SYSTEM_PROMPT = """You are a strict data formatting machine for a smart fridge simulator.
-Convert the input query into a single raw string line and return it inside the "vector" key of a JSON object.
+Your ONLY job is to convert incoming user actions, item lists, and context parameters into a clean string vector line packed inside the "vector" key of a JSON object.
 
-STRICT FORMAT RULES:
-- Return ONLY JSON matching this format: {"vector": "YOUR_FLAT_STRING_HERE"}
-- Write everything in ONE single line.
-- Do NOT include spaces after commas. No markdown blocks.
-
-ACTION BLUEPRINTS:
-1. For "shopping|X|...":
-   Pattern -> SHOPPING,CATEGORY:NAME:PRICE:PORTIONS:WEIGHT,...
+STRICT ACTION PATTERNS:
+1. If Action is "shopping":
+   Output exactly X items using format -> SHOPPING,CATEGORY:NAME:PRICE:PORTIONS:WEIGHT_GRAMS,...
    Example: {"vector": "SHOPPING,1:CHICKEN FILLET:3100:2:2434.5,2:TOMATOES:924:1:415.2"}
 
-2. For "cooking|AVAILABLE_ITEMS|...":
-   Pattern -> COOKING,DISH_NAME:YIELD_PORTIONS:YIELD_WEIGHT,USED_ID:USED_PORTIONS:USED_WEIGHT,...
+2. If Action is "cooking":
+   Output format -> COOKING,DISH_NAME:YIELD_PORTIONS:YIELD_WEIGHT,USED_ID:USED_PORTIONS:USED_WEIGHT,...
    Example: {"vector": "COOKING,CHICKEN SOUP:4:2000.0,1:1.0:1200.0,2:2.0:412.0"}
 
-3. For "consumption|AVAILABLE_FOOD|...":
-   Pattern -> CONSUMPTION,LOCAL_ID:PORTIONS:WEIGHT_GRAMS,...
+3. If Action is "consumption":
+   Output format -> CONSUMPTION,LOCAL_ID:PORTIONS:WEIGHT_GRAMS,...
    Example: {"vector": "CONSUMPTION,1:1.0:450.5,2:0.5:250.0"}
 
-4. For "waste|SPOILED_LIST":
-   Pattern -> WASTE,LOCAL_ID:PORTIONS:WEIGHT:REASON_CODE,...
+4. If Action is "waste":
+   Output format -> WASTE,LOCAL_ID:PORTIONS:WEIGHT:REASON_CODE,... (Reason codes: 1=Mold, 2=Stale, 3=Expired, 4=Smell)
    Example: {"vector": "WASTE,1:1.0:412.0:1,2:0.5:250.0:3"}"""
 
-# Simplified schema without regex to let the model generate smoothly without syntax rejections
 RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
         "vector": {
             "type": "string",
-            "description": "The flat data string following the blueprint."
+            "description": "The exact flat data string vector following the blueprint pattern."
         }
     },
     "required": ["vector"]
 }
 
+# We structure the payload properties explicitly here
 class InferenceRequest(BaseModel):
-    query: str
+    action: str      # e.g., "shopping", "cooking", "consumption", "waste"
+    items: str       # e.g., "3" or "1:EGG(67),2:MILK(289)" or empty
+    context: str     # e.g., "1:2:3:0:1:4:2:1:0:0:5:2:1:9:0:1:1:3:2:4"
 
 @app.post("/generate")
 def generate_behavior(request: InferenceRequest):
     try:
-        raw_response = requests.post('http://ollama:11434/api/chat', json={
+        # Build an easy-to-read, clean task prompt for Ollama
+        user_instruction = (
+            f"ACTION TYPE: {request.action}\n"
+            f"INPUT ITEMS DATA: {request.items}\n"
+            f"RESIDENT CONTEXT VECTOR: {request.context}\n\n"
+            f"Convert this data into the strict '{request.action}' flat vector line inside the 'vector' key now."
+        )
+
+        response = requests.post('http://ollama:11434/api/chat', json={
             "model": "qwen2.5:3b", 
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Convert this query to raw vector data now: {request.query}"}
+                {"role": "user", "content": user_instruction}
             ],
             "format": RESPONSE_SCHEMA,
             "options": {
-                "temperature": 0.0,      # Absolute deterministic output
-                "num_thread": 4,         # Utilizes your physical Intel P-cores
+                "temperature": 0.0,     # Enforces zero formatting drift
+                "num_thread": 4,        # Locks to your 4 fast Intel P-cores
                 "num_ctx": 2048,
                 "num_predict": 120,
                 "stop": ["\n", "User:", "Assistant:"]
@@ -65,15 +70,9 @@ def generate_behavior(request: InferenceRequest):
             "stream": False
         })
         
-        resp_json = raw_response.json()
-        
-        # Safe error trapping to catch exactly what Ollama responds with
-        if 'message' not in resp_json:
-            raise HTTPException(status_code=500, detail=f"Ollama raw error payload: {json.dumps(resp_json)}")
-            
-        ollama_json = resp_json['message']['content']
+        ollama_json = response.json()['message']['content']
         data = json.loads(ollama_json)
         return {"vector_output": data.get("vector", "").strip()}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Inference engine failure: {str(e)}")

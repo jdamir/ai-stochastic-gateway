@@ -1,100 +1,53 @@
-import json
-import os
-import re
-import logging
+import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import requests
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("ai-gateway")
+app = FastAPI(title="Digital Fridge LLM Gateway")
 
-app = FastAPI(title="Universal Stochastic AI Gateway")
+SYSTEM_PROMPT = """Роль: Ты модуль стохастического поведения цифрового жителя в симуляторе умного холодильника.
+Инструкция дешифрации вектора контекста (20 позиций, формат P1:P2:...:P20):
+P1 (Архетип): 1=Спортсмен, 2=Студент, 3=Семья, 4=Трудоголик. P2 (Настроение): 1=Радостный, 2=Уставший, 3=Грустный. P3 (Время): 1=Утро, 2=День, 3=Вечер. P4 (Веган): 0=Нет, 1=Да. P5 (Доход): 1=Низкий, 2=Средний, 3=Высокий. Остальные параметры P6-P20 влияют на случайный выбор продуктов.
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+ПРАВИЛА ДЛЯ ДЕЙСТВИЙ (Выдавай СТРОГО одну строку ответа без лишних слов, опечаток и пробелов после запятых):
 
-class PromptRequest(BaseModel):
-    model: str = "qwen2.5:3b"
-    prompt: str
-    stream: bool = False
-    format: str = "json"
+1. Если на входе "shopping|X|ВЕКТОР_КОНТЕКСТА" -> Придумай X случайных товаров под контекст (1=Мясо, 2=Овощи, 3=Молоко, 4=Напитки, 5=Выпечка, 6=Сладости). Цены выдумывай случайные, но логичные для P5 (дохода).
+   Формат вывода: КОД_КАТЕГОРИИ:НАЗВАНИЕ:ЦЕНА_ЗА_ЕДИНИЦУ:ПОРЦИИ:ВЕС_В_ГРАММАХ, ...
+   Пример: 2:ОГУРЦЫ ГРУНТОВЫЕ:450:2:850,1:КРЫЛЫШКИ КУРИНЫЕ:1800:2:1240
 
-@app.post("/api/generate")
-async def generate_receipt(req: PromptRequest):
-    logger.info(f"Processing request for model {req.model}")
-    
-    # Извлекаем тип действия из промпта силами регулярных выражений,
-    # чтобы в случае таймаута CPU сгенерировать точную структуру контракта
-    action_match = re.search(r"действие:\s*([A-Z_]+)", req.prompt)
-    action_type = action_match.group(1) if action_match else "PURCHASE"
+2. Если на входе "cooking|СПИСОК_ДОСТУПНОГО|ВЕКТОР_КОНТЕКСТА" -> Свари блюдо из пронумерованных продуктов списка.
+   Формат вывода: НАЗВАНИЕ_БЛЮДА:ВЫХОД_ПОРЦИЙ:ВЫХОД_ВЕСА|ЛОКАЛЬНЫЙ_ID:ПОРЦИИ:ВЕС, ...
+   Пример: КУРИНЫЙ СУП С ТОМАТАМИ:4:2000|1:1:1200,2:2:800
 
-    url = f"{OLLAMA_HOST}/api/generate"
-    payload = {
-        "model": req.model,
-        "prompt": req.prompt,
-        "stream": False,
-        "format": "json"
-    }
+3. Если на входе "consumption|СПИСОК_МОЖНО_СЪЕСТЬ|ВЕКТОР_КОНТЕКСТА" -> Выбери еду по номерам и определи порции.
+   Формат вывода: ЛОКАЛЬНЫЙ_ID:ПОРЦИИ:ВЕС,ЛОКАЛЬНЫЙ_ID:ПОРЦИИ:ВЕС
+   Пример: 1:1:500,2:0.5:200
 
+4. Если на входе "waste|СПИСОК_ЗАЛЕЖАВШЕГОСЯ" -> Выбери что выкинуть по номерам и укажи код причины (1=Плесень, 2=Засохло, 3=Протухло, 4=Запах).
+   Формат вывода: ЛОКАЛЬНЫЙ_ID:ПОРЦИИ:ВЕС:КОД_ПРИЧИНЫ, ...
+   Пример: 1:1.0:400.0:1,2:0.5:200.0:2"""
+
+class InferenceRequest(BaseModel):
+    query: str
+
+@app.post("/generate")
+def generate_behavior(request: InferenceRequest):
     try:
-        # Так как Ollama крутится в ОЗУ (CPU), таймаут выставляем на 30 секунд,
-        # давая модели время спокойно дописать сложный JSON
-        resp = requests.post(url, json=payload, timeout=30)
-        if resp.status_code != 200:
-            logger.error(f"Ollama CPU queue overload. Status: {resp.status_code}")
-            return fallback_response(action_type, "OLLAMA_OVERLOAD")
-
-        response_data = resp.json()
-        raw_text = response_data.get("response", "").strip()
-
-        clean_json_text = re.sub(r"```json\s*|```", "", raw_text).strip()
-
-        parsed_json = json.loads(clean_json_text)
-        return {"response": json.dumps(parsed_json, ensure_ascii=False)}
-
-    except json.JSONDecodeError:
-        logger.warning("LLM hallucinated invalid syntax. Triggering adapter fallback.")
-        return fallback_response(action_type, "INVALID_LLM_SYNTAX")
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Ollama connection timeout on CPU computation: {e}")
-        return fallback_response(action_type, "OLLAMA_TIMEOUT")
-
-def fallback_response(action_type: str, reason: str):
-    """Генерирует интеллектуальные DTO-заглушки под конкретные типы ручек боевого gRPC"""
-    if action_type == "COOKING":
-        fallback = {
-            "dish_item_id": "99999999-9999-9999-9999-999999999999",
-            "dish_name": "Жаркое по-домашнему (Fallback)",
-            "yield_portions": 4.0,
-            "yield_weight_grams": 1200.0,
-            "ingredients": [
-                {"source_item_id": "11111111-1111-1111-1111-111111111112", "used_portions": 1.0, "used_weight_grams": 500.0}
-            ]
-        }
-    elif action_type == "CONSUMPTION":
-        fallback = {
-            "item_id": "99999999-9999-9999-9999-999999999999",
-            "portions": 1.0,
-            "weight_grams": 300.0
-        }
-    elif action_type == "WASTE":
-        fallback = {
-            "item_id": "22222222-2222-2222-2222-222222222223",
-            "portions": 0.5,
-            "weight_grams": 200.0,
-            "reason": f"Истек срок годности ({reason})"
-        }
-    else: # PURCHASE
-        fallback = {
-            "receipt_no": f"BILL-FALLBACK-{reason}-2026",
-            "total_price": 750.0,
-            "items": [
-                {"item_id": "11111111-1111-1111-1111-111111111112", "name": "Куриное филе (Fallback)", "category": "Мясо", "portions": 1.0, "weight_grams": 500.0, "price": 500.0},
-                {"item_id": "22222222-2222-2222-2222-222222222223", "name": "Картофель (Fallback)", "category": "Овощи", "portions": 1.0, "weight_grams": 1000.0, "price": 250.0}
-            ]
-        }
-    return {"response": json.dumps(fallback, ensure_ascii=False)}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=11435)
+        # Обращаемся к Ollama, установленной на хосте Ubuntu
+        response = requests.post('http://ollama:11434/api/chat', json={
+            "model": "qwen2.5:3b", 
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": request.query}
+            ],
+            "options": {
+                "temperature": 0.8,
+                "num_thread": 4,       # Строго 4 P-ядра тестового процессора i5-12450H
+                "num_ctx": 4096,
+                "num_predict": 800     # Запас, чтобы длинные списки продуктов не обрезались
+            },
+            "stream": False
+        })
+        result_text = response.json()['message']['content']
+        return {"vector_output": result_text.strip()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ollama connection error: {str(e)}")

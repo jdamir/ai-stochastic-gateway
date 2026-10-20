@@ -1,0 +1,30 @@
+services:
+  # 1. Официальный контейнер Ollama (Оптимизирован под CPU)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: fridge-ollama
+    volumes:
+      - ollama_storage:/root/.ollama  # Модели сохраняются на жесткий диск Ubuntu
+    restart: unless-stopped
+
+  # 2. Автоматический загрузчик модели (Отрабатывает 1 раз при старте и выключается)
+  ollama-model-puller:
+    image: curlimages/curl:latest
+    container_name: fridge-model-puller
+    depends_on:
+      - ollama
+    command: >
+      curl -X POST http://ollama:11434/api/pull -d '{"name": "qwen2.5:3b"}'
+
+  # 3. Ваш FastAPI шлюз
+  gateway:
+    build: .
+    container_name: fridge-ai-gateway
+    ports:
+      - "8000:8000"  # Открываем наружу порт для симулятора на Go
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  ollama_storage:  # Создает изолированную папку на сервере для хранения весов моделей

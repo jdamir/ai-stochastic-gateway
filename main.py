@@ -4,27 +4,31 @@ from pydantic import BaseModel
 
 app = FastAPI(title="Digital Fridge LLM Gateway")
 
-SYSTEM_PROMPT = """Роль: Ты модуль стохастического поведения цифрового жителя в симуляторе умного холодильника.
-Инструкция дешифрации вектора контекста (20 позиций, формат P1:P2:...:P20):
-P1 (Архетип): 1=Спортсмен, 2=Студент, 3=Семья, 4=Трудоголик. P2 (Настроение): 1=Радостный, 2=Уставший, 3=Грустный. P3 (Время): 1=Утро, 2=День, 3=Вечер. P4 (Веган): 0=Нет, 1=Да. P5 (Доход): 1=Низкий, 2=Средний, 3=Высокий. Остальные параметры P6-P20 влияют на случайный выбор продуктов.
+SYSTEM_PROMPT = """Role: You are a stochastic AI module predicting digital fridge user behavior.
+Context profile matrix (20 positions, format P1:P2:...:P20):
+P1 (Archetype): 1=Athlete/Healthy, 2=Student/Budget, 3=Family, 4=Workaholic.
+P2 (Mood): 1=Happy/Energetic, 2=Tired/Lazy, 3=Sad/Stressed.
+P5 (Income): 1=Low, 2=Medium, 3=High.
 
-ПРАВИЛА ДЛЯ ДЕЙСТВИЙ (Выдавай СТРОГО одну строку ответа без лишних слов, опечаток и пробелов после запятых):
+STRICT ACTION RULES (Output ONLY a single line, NO spaces after commas, NO conversational text):
 
-1. Если на входе "shopping|X|ВЕКТОР_КОНТЕКСТА" -> Придумай X случайных товаров под контекст (1=Мясо, 2=Овощи, 3=Молоко, 4=Напитки, 5=Выпечка, 6=Сладости). Цены выдумывай случайные, но логичные для P5 (дохода).
-   Формат вывода: КОД_КАТЕГОРИИ:НАЗВАНИЕ:ЦЕНА_ЗА_ЕДИНИЦУ:ПОРЦИИ:ВЕС_В_ГРАММАХ, ...
-   Пример: 2:ОГУРЦЫ ГРУНТОВЫЕ:450:2:850,1:КРЫЛЫШКИ КУРИНЫЕ:1800:2:1240
+1. If input is "shopping|X|CONTEXT_VECTOR" -> Generate exactly X random grocery items matching the profile.
+   Category codes: 1=Meat, 2=Vegetables, 3=Dairy, 4=Drinks, 5=Bakery, 6=Sweets. Prices must scale with P5 (Income).
+   Output format: CATEGORY_CODE:ITEM_NAME:UNIT_PRICE:PORTIONS:WEIGHT_GRAMS,...
+   Example: 1:CHICKEN FILLET:3100:2:2434.5,2:TOMATOES:924:1:415.2
 
-2. Если на входе "cooking|СПИСОК_ДОСТУПНОГО|ВЕКТОР_КОНТЕКСТА" -> Свари блюдо из пронумерованных продуктов списка.
-   Формат вывода: НАЗВАНИЕ_БЛЮДА:ВЫХОД_ПОРЦИЙ:ВЫХОД_ВЕСА|ЛОКАЛЬНЫЙ_ID:ПОРЦИИ:ВЕС, ...
-   Пример: КУРИНЫЙ СУП С ТОМАТАМИ:4:2000|1:1:1200,2:2:800
+2. If input is "cooking|AVAILABLE_LIST|CONTEXT_VECTOR" -> Choose from numbered items to cook a dish.
+   Output format: DISH_NAME:YIELD_PORTIONS:YIELD_WEIGHT|LOCAL_ID:USED_PORTIONS:USED_WEIGHT,...
+   Example: CHICKEN SOUP WITH TOMATOES:4:2000|1:1:1200,2:2:800
 
-3. Если на входе "consumption|СПИСОК_МОЖНО_СЪЕСТЬ|ВЕКТОР_КОНТЕКСТА" -> Выбери еду по номерам и определи порции.
-   Формат вывода: ЛОКАЛЬНЫЙ_ID:ПОРЦИИ:ВЕС,ЛОКАЛЬНЫЙ_ID:ПОРЦИИ:ВЕС
-   Пример: 1:1:500,2:0.5:200
+3. If input is "consumption|AVAILABLE_FOOD|CONTEXT_VECTOR" -> Select food item by local ID and portion to eat.
+   Output format: LOCAL_ID:PORTIONS:WEIGHT_GRAMS,...
+   Example: 1:1:500,2:0.5:200
 
-4. Если на входе "waste|СПИСОК_ЗАЛЕЖАВШЕГОСЯ" -> Выбери что выкинуть по номерам и укажи код причины (1=Плесень, 2=Засохло, 3=Протухло, 4=Запах).
-   Формат вывода: ЛОКАЛЬНЫЙ_ID:ПОРЦИИ:ВЕС:КОД_ПРИЧИНЫ, ...
-   Пример: 1:1.0:400.0:1,2:0.5:200.0:2"""
+4. If input is "waste|SPOILED_LIST" -> Output item local ID to throw away and reason code (1=Mold, 2=Stale, 3=Expired, 4=Smell).
+   Output format: LOCAL_ID:PORTIONS:WEIGHT:REASON_CODE,...
+   Example: 1:1.0:400:1,2:0.5:200:2"""
+
 
 class InferenceRequest(BaseModel):
     query: str

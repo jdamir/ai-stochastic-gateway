@@ -4,31 +4,29 @@ from pydantic import BaseModel
 
 app = FastAPI(title="Digital Fridge LLM Gateway")
 
-SYSTEM_PROMPT = """Role: You are a stochastic AI module predicting digital fridge user behavior.
-Context profile matrix (20 positions, format P1:P2:...:P20):
-P1 (Archetype): 1=Athlete/Healthy, 2=Student/Budget, 3=Family, 4=Workaholic.
-P2 (Mood): 1=Happy/Energetic, 2=Tired/Lazy, 3=Sad/Stressed.
-P5 (Income): 1=Low, 2=Medium, 3=High.
+SYSTEM_PROMPT = """Role: You are a strict stochastic AI module predicting digital fridge user behavior.
+You receive a 20-position context vector (format P1:P2:...:P20). 
+P1 (Archetype): 1=Athlete, 2=Student, 3=Family, 4=Workaholic. P2 (Mood): 1=Happy, 2=Tired, 3=Sad. P5 (Income): 1=Low, 2=Medium, 3=High.
 
-STRICT ACTION RULES (Output ONLY a single line, NO spaces after commas, NO conversational text):
+STRICT FORMATTING RULES:
+- Output ONLY a single line of raw data.
+- Do NOT include any introduction, explanations, markdown, or trailing newlines.
+- Separate items strictly by commas. No spaces after commas.
 
-1. If input is "shopping|X|CONTEXT_VECTOR" -> Generate exactly X random grocery items matching the profile.
-   Category codes: 1=Meat, 2=Vegetables, 3=Dairy, 4=Drinks, 5=Bakery, 6=Sweets. Prices must scale with P5 (Income).
-   Output format: CATEGORY_CODE:ITEM_NAME:UNIT_PRICE:PORTIONS:WEIGHT_GRAMS,...
-   Example: 1:CHICKEN FILLET:3100:2:2434.5,2:TOMATOES:924:1:415.2
+ACTION DEFINITIONS:
+1. "shopping|X|VECTOR" -> Output exactly X random grocery items matching the profile.
+   Category codes: 1=Meat, 2=Vegetables, 3=Dairy, 4=Drinks, 5=Bakery, 6=Sweets.
+   Format: CATEGORY_CODE:ITEM_NAME:UNIT_PRICE:PORTIONS:WEIGHT_GRAMS
+   Example Response for X=2: 1:CHICKEN FILLET:3100:2:2434.5,2:TOMATOES:924:1:415.2
 
-2. If input is "cooking|AVAILABLE_LIST|CONTEXT_VECTOR" -> Choose from numbered items to cook a dish.
-   Output format: DISH_NAME:YIELD_PORTIONS:YIELD_WEIGHT|LOCAL_ID:USED_PORTIONS:USED_WEIGHT,...
-   Example: CHICKEN SOUP WITH TOMATOES:4:2000|1:1:1200,2:2:800
+2. "cooking|AVAILABLE_LIST|VECTOR" -> Cook a single dish from items.
+   Format: DISH_NAME:YIELD_PORTIONS:YIELD_WEIGHT|LOCAL_ID:USED_PORTIONS:USED_WEIGHT,...
 
-3. If input is "consumption|AVAILABLE_FOOD|CONTEXT_VECTOR" -> Select food item by local ID and portion to eat.
-   Output format: LOCAL_ID:PORTIONS:WEIGHT_GRAMS,...
-   Example: 1:1:500,2:0.5:200
+3. "consumption|AVAILABLE_FOOD|VECTOR" -> Eat existing items by local ID.
+   Format: LOCAL_ID:PORTIONS:WEIGHT_GRAMS,...
 
-4. If input is "waste|SPOILED_LIST" -> Output item local ID to throw away and reason code (1=Mold, 2=Stale, 3=Expired, 4=Smell).
-   Output format: LOCAL_ID:PORTIONS:WEIGHT:REASON_CODE,...
-   Example: 1:1.0:400:1,2:0.5:200:2"""
-
+4. "waste|SPOILED_LIST" -> Throw away items. Reason codes: 1=Mold, 2=Stale, 3=Expired, 4=Smell.
+   Format: LOCAL_ID:PORTIONS:WEIGHT:REASON_CODE,..."""
 
 class InferenceRequest(BaseModel):
     query: str
@@ -36,7 +34,6 @@ class InferenceRequest(BaseModel):
 @app.post("/generate")
 def generate_behavior(request: InferenceRequest):
     try:
-        # Обращаемся к Ollama, установленной на хосте Ubuntu
         response = requests.post('http://ollama:11434/api/chat', json={
             "model": "qwen2.5:3b", 
             "messages": [
@@ -44,14 +41,19 @@ def generate_behavior(request: InferenceRequest):
                 {"role": "user", "content": request.query}
             ],
             "options": {
-                "temperature": 0.8,
-                "num_thread": 4,       # Строго 4 P-ядра тестового процессора i5-12450H
-                "num_ctx": 4096,
-                "num_predict": 800     # Запас, чтобы длинные списки продуктов не обрезались
+                "temperature": 0.7,     # Slightly lowered for better rule adherence
+                "num_thread": 4,        # Uses your physical Intel P-cores
+                "num_ctx": 2048,        # Optimized context window
+                "num_predict": 150,     # Reduced since vectors are short anyway
+                "stop": ["\n", "User:", "Assistant:"] # CRITICAL: Tells the CPU to stop generating immediately
             },
             "stream": False
         })
+        
         result_text = response.json()['message']['content']
-        return {"vector_output": result_text.strip()}
+        # Strip any accidental leading/trailing whitespaces or markdown codeblocks
+        clean_output = result_text.replace("```", "").replace("text", "").strip()
+        return {"vector_output": clean_output}
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ollama connection error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ollama error: {str(e)}")

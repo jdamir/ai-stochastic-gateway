@@ -4,33 +4,42 @@ from pydantic import BaseModel
 
 app = FastAPI(title="Digital Fridge LLM Gateway")
 
-# We simplified and focused the instructions so a 3B model can execute them instantly on CPU
-SYSTEM_PROMPT = """You are a strict backend data formatting engine for a smart fridge simulator.
-You receive a text query and MUST convert it into a raw string vector.
+SYSTEM_PROMPT = """You are a strict data formatting robot for a smart fridge simulator.
+Your ONLY job is to convert the input query into a compact string vector and return it inside a JSON object with the key "vector".
 
-CRITICAL RULES:
-- Output ONLY the raw result. No explanations, no conversation, no markdown wrappers, no backticks.
-- Write everything in a SINGLE line.
-- Use uppercase for item names.
+STRICT OUTPUT FORMAT RULES:
+- Return a JSON object: {"vector": "YOUR_COMPACT_STRING_HERE"}
+- Do NOT add spaces after commas.
+- Do NOT include markdown blocks or conversational text.
 
-FORMAT PATTERNS TO FOLLOW EXACTLY:
-1. If query starts with "shopping|X|...":
-   Output exactly X items using format -> CATEGORY_CODE:ITEM_NAME:PRICE:PORTIONS:WEIGHT_GRAMS,...
-   (Category codes: 1=Meat, 2=Vegetables, 3=Dairy, 4=Drinks, 5=Bakery, 6=Sweets)
-   Example: 1:CHICKEN FILLET:3100:2:2434.5,2:TOMATOES:924:1:415.2
+PATTERNS TO FOLLOW EXACTLY:
+1. For "shopping|X|...":
+   Format -> CATEGORY_CODE:ITEM_NAME:PRICE:PORTIONS:WEIGHT_GRAMS,...
+   Example: {"vector": "1:CHICKEN FILLET:3100:2:2434.5,2:TOMATOES:924:1:415.2"}
 
-2. If query starts with "cooking|AVAILABLE_ITEMS|...":
-   Output format -> DISH_NAME:YIELD_PORTIONS:YIELD_WEIGHT|LOCAL_ID:USED_PORTIONS:USED_WEIGHT,...
-   Example: CHICKEN SOUP WITH TOMATOES:4:2000.0|1:1:1200.0,2:2:412.0
+2. For "cooking|AVAILABLE_ITEMS|...":
+   Format -> DISH_NAME:YIELD_PORTIONS:YIELD_WEIGHT|LOCAL_ID:USED_PORTIONS:USED_WEIGHT,...
+   Example: {"vector": "CHICKEN SOUP WITH TOMATOES:4:2000.0|1:1:1200.0,2:2:412.0"}
 
-3. If query starts with "consumption|AVAILABLE_FOOD|...":
-   Output format -> LOCAL_ID:PORTIONS:WEIGHT_GRAMS,...
-   Example: 1:1:450.5,2:0.5:250.0
+3. For "consumption|AVAILABLE_FOOD|...":
+   Format -> LOCAL_ID:PORTIONS:WEIGHT_GRAMS,...
+   Example: {"vector": "1:1:450.5,2:0.5:250.0"}
 
-4. If query starts with "waste|SPOILED_LIST":
-   Output format -> LOCAL_ID:PORTIONS:WEIGHT:REASON_CODE,...
-   (Reason codes: 1=Mold, 2=Stale, 3=Expired, 4=Smell)
-   Example: 1:1.0:412.0:1,2:0.5:250.0:3"""
+4. For "waste|SPOILED_LIST":
+   Format -> LOCAL_ID:PORTIONS:WEIGHT:REASON_CODE,... (Reason codes: 1=Mold, 2=Stale, 3=Expired, 4=Smell)
+   Example: {"vector": "1:1.0:412.0:1,2:0.5:250.0:3"}"""
+
+# Описываем жесткую схему ответа для Ollama, чтобы она не могла ошибиться в синтаксисе
+RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "vector": {
+            "type": "string",
+            "description": "The raw data vector line matching the requested pattern exactly."
+        }
+    },
+    "required": ["vector"]
+}
 
 class InferenceRequest(BaseModel):
     query: str
@@ -42,24 +51,23 @@ def generate_behavior(request: InferenceRequest):
             "model": "qwen2.5:3b", 
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Convert this query to raw vector data now: {request.query}"}
+                {"role": "user", "content": f"Format this query into the 'vector' field now: {request.query}"}
             ],
+            "format": RESPONSE_SCHEMA,  # Включаем жесткий JSON-режим Ollama
             "options": {
-                "temperature": 0.2,     # CRITICAL: Lowered to 0.2 to stop hallucinations and fix structure!
-                "num_thread": 4,        # Locks onto your 4 high-performance physical cores
+                "temperature": 0.1,     # Минимальная температура для максимальной точности
+                "num_thread": 4,        # Задействуем 4 производительных P-ядра i5
                 "num_ctx": 2048,
-                "num_predict": 120,     # Prevents long-running loops
-                "stop": ["\n", "User:", "Assistant:", "query", "cooking|", "shopping|", "consumption|"] # Hard stops
+                "num_predict": 100
             },
             "stream": False
         })
         
-        result_text = response.json()['message']['content']
+        # Получаем JSON от Ollama, парсим его и отдаем симулятору чистую строку
+        ollama_json = response.json()['message']['content']
+        data = json.loads(ollama_json)
         
-        # Clean any accidental junk or markdown wrapper attempts
-        clean_output = result_text.replace("```", "").replace("text", "").replace("\n", "").strip()
-        
-        return {"vector_output": clean_output}
+        return {"vector_output": data.get("vector", "").strip()}
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ollama connection error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
